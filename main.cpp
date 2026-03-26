@@ -152,8 +152,12 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                // Give the decoded frame a presentation timestamp based on best effort
-                frame->pts = frame->best_effort_timestamp;
+                // Give the decoded frame a presentation timestamp and rescale it to the encoder's scale
+                // 致命 Bug 修复：解码出来的 timestamp 单位原来是针对 mp4 输入流的 (如 1/90000)
+                // 必须严格转换到 x265 编码器的刻度 (如 1/25)，否则输入进去的数字会让由于刻度不同被放大成千上万倍，导致画面疯跑！
+                frame->pts = av_rescale_q(frame->best_effort_timestamp, in_stream->time_base, enc_ctx->time_base);
+                cout << "[Decode] in_stream best_effort_ts: " << frame->best_effort_timestamp 
+                     << " -> rescaled enc_ctx frame->pts: " << frame->pts << endl;
 
                 // Send frame to encoder
                 ret = avcodec_send_frame(enc_ctx, frame);
@@ -174,6 +178,7 @@ int main(int argc, char **argv) {
                     // Rescale timestamps from encoder timebase to output stream timebase
                     av_packet_rescale_ts(enc_pkt, enc_ctx->time_base, out_stream->time_base);
                     enc_pkt->stream_index = out_stream->index;
+                    cout << "  [Encode Return] enc_pkt rescaled to output container pts: " << enc_pkt->pts << endl;
 
                     // Write to output file
                     av_interleaved_write_frame(ofmt_ctx, enc_pkt);
@@ -191,11 +196,15 @@ int main(int argc, char **argv) {
     // Flush decoder
     avcodec_send_packet(dec_ctx, nullptr);
     while (avcodec_receive_frame(dec_ctx, frame) >= 0) {
-        frame->pts = frame->best_effort_timestamp;
+        frame->pts = av_rescale_q(frame->best_effort_timestamp, in_stream->time_base, enc_ctx->time_base);
+        cout << "[Flush Decode] best_effort_ts: " << frame->best_effort_timestamp 
+             << " -> rescaled frame->pts: " << frame->pts << endl;
+             
         avcodec_send_frame(enc_ctx, frame);
         while (avcodec_receive_packet(enc_ctx, enc_pkt) >= 0) {
             av_packet_rescale_ts(enc_pkt, enc_ctx->time_base, out_stream->time_base);
             enc_pkt->stream_index = out_stream->index;
+            cout << "  [Flush Encode Return] enc_pkt->pts rescaled: " << enc_pkt->pts << endl;
             av_interleaved_write_frame(ofmt_ctx, enc_pkt);
             av_packet_unref(enc_pkt);
         }
