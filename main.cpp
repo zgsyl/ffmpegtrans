@@ -91,6 +91,10 @@ int main(int argc, char **argv) {
     if (framerate.num == 0 || framerate.den == 0) {
         framerate = {25, 1}; // 如果解析不到帧率，兜底设置 25 fps
     }
+    // ======【倍速修改 1：帧率翻倍】======
+    // 将帧率的分子直接乘 2（例如从 25/1 变成 50/1）
+    framerate.num *= 2; 
+    // ===================================
     enc_ctx->framerate = framerate;
     enc_ctx->time_base = av_inv_q(framerate);
     
@@ -152,10 +156,14 @@ int main(int argc, char **argv) {
                     break;
                 }
 
+                // ======【倍速修改 2：时间戳砍半】======
+                // 拿到原来的时间戳后，直接除以 2
+                int64_t speedup_timestamp = frame->best_effort_timestamp / 2;
+
                 // Give the decoded frame a presentation timestamp and rescale it to the encoder's scale
                 // 致命 Bug 修复：解码出来的 timestamp 单位原来是针对 mp4 输入流的 (如 1/90000)
                 // 必须严格转换到 x265 编码器的刻度 (如 1/25)，否则输入进去的数字会让由于刻度不同被放大成千上万倍，导致画面疯跑！
-                frame->pts = av_rescale_q(frame->best_effort_timestamp, in_stream->time_base, enc_ctx->time_base);
+                frame->pts = av_rescale_q(speedup_timestamp, in_stream->time_base, enc_ctx->time_base);
                 cout << "[Decode] in_stream best_effort_ts: " << frame->best_effort_timestamp 
                      << " -> rescaled enc_ctx frame->pts: " << frame->pts << endl;
 
@@ -196,7 +204,10 @@ int main(int argc, char **argv) {
     // Flush decoder
     avcodec_send_packet(dec_ctx, nullptr);
     while (avcodec_receive_frame(dec_ctx, frame) >= 0) {
-        frame->pts = av_rescale_q(frame->best_effort_timestamp, in_stream->time_base, enc_ctx->time_base);
+        // ======【倍速修改 2：时间戳砍半 (补漏)】======
+        int64_t speedup_timestamp = frame->best_effort_timestamp / 2;
+        frame->pts = av_rescale_q(speedup_timestamp, in_stream->time_base, enc_ctx->time_base);
+        
         cout << "[Flush Decode] best_effort_ts: " << frame->best_effort_timestamp 
              << " -> rescaled frame->pts: " << frame->pts << endl;
              
